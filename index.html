@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🌀 Orbite — Jeu de réflexes</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0b0b1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #ccc;
+  }
+  .game-wrap {
+    background: #12122a;
+    border-radius: 24px;
+    padding: 28px;
+    box-shadow: 0 0 80px rgba(100, 50, 255, 0.12);
+    text-align: center;
+    position: relative;
+  }
+  h1 {
+    font-size: 22px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    background: linear-gradient(135deg, #7c4dff, #00e5ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 8px;
+  }
+  .hud {
+    display: flex;
+    justify-content: space-between;
+    padding: 0 8px;
+    margin-bottom: 12px;
+    font-size: 14px;
+    color: #666;
+  }
+  .hud span { color: #7c4dff; font-weight: 700; }
+  canvas {
+    display: block;
+    margin: 0 auto;
+    border-radius: 50%;
+    background: radial-gradient(circle at center, #0d0d2b 0%, #08081a 100%);
+    box-shadow: 0 0 40px rgba(124, 77, 255, 0.08);
+    width: 420px;
+    height: 420px;
+    cursor: none;
+  }
+  .controls {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
+  button {
+    background: #2a1a5e;
+    color: #b388ff;
+    border: 1px solid #4a2a8e;
+    padding: 8px 20px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.15s;
+  }
+  button:hover { background: #3a2a7e; }
+  button.danger { background: #5e1a1a; border-color: #8e2a2a; color: #ff8888; }
+  button.danger:hover { background: #7e2a2a; }
+  .hint {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #444;
+  }
+  .overlay {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(8,8,26,0.92);
+    backdrop-filter: blur(6px);
+    padding: 32px 44px;
+    border-radius: 20px;
+    border: 1px solid #2a1a5e;
+    display: none;
+  }
+  .overlay h2 { font-size: 28px; color: #ff5252; margin-bottom: 4px; }
+  .overlay p { font-size: 14px; color: #888; }
+  @media (max-width: 500px) {
+    canvas { width: 300px; height: 300px; }
+    .game-wrap { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="game-wrap">
+  <h1>🌀 Orbite</h1>
+  <div class="hud">
+    <div>Score <span id="score">0</span></div>
+    <div>Record <span id="record">0</span></div>
+    <div>Niveau <span id="level">1</span></div>
+  </div>
+  <canvas id="c" width="420" height="420"></canvas>
+  <div class="overlay" id="overlay">
+    <h2>💥 Perdu</h2>
+    <p>Score : <span id="finalScore">0</span></p>
+    <p style="margin-top:12px;"><button class="danger" onclick="reset()">🔄 Rejouer</button></p>
+  </div>
+  <div class="controls">
+    <button onclick="switchOrbit(-1)">⬆ Intérieur</button>
+    <button onclick="switchOrbit(1)">⬇ Extérieur</button>
+  </div>
+  <div class="hint">↑ ↓ pour changer d'orbite · Espace pour dash</div>
+</div>
+<script>
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const recordEl = document.getElementById('record');
+  const levelEl = document.getElementById('level');
+  const overlay = document.getElementById('overlay');
+  const finalScore = document.getElementById('finalScore');
+
+  const W = 420, H = 420, CX = W/2, CY = H/2;
+  const ORBITS = [80, 130, 180]; // radii
+  const SHIP_R = 7;
+
+  let ship, asteroids, score, level, record, running, anim, spawnTimer, spawnInterval;
+  let particles = [];
+  let flashTimer = 0;
+  let dashCooldown = 0;
+
+  function init() {
+    ship = { orbit: 1, angle: 0, speed: 0.03 };
+    asteroids = [];
+    particles = [];
+    score = 0; level = 1; running = true;
+    flashTimer = 0; dashCooldown = 0;
+    spawnInterval = 90;
+    record = parseInt(localStorage.getItem('orbitRecord') || '0');
+    recordEl.textContent = record;
+    levelEl.textContent = level;
+    scoreEl.textContent = '0';
+    overlay.style.display = 'none';
+    spawnTimer = 0;
+    if (anim) cancelAnimationFrame(anim);
+    anim = requestAnimationFrame(loop);
+  }
+
+  function switchOrbit(d) {
+    if (!running) return;
+    const n = Math.max(0, Math.min(ORBITS.length - 1, ship.orbit + d));
+    if (n !== ship.orbit) {
+      ship.orbit = n;
+      // burst particles
+      for (let i = 0; i < 12; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const sp = 1 + Math.random() * 2;
+        particles.push({
+          x: CX + Math.cos(ship.angle) * ORBITS[n],
+          y: CY + Math.sin(ship.angle) * ORBITS[n],
+          vx: Math.cos(a) * sp,
+          vy: Math.sin(a) * sp,
+          life: 40 + Math.random() * 30,
+          maxLife: 70, color: '#7c4dff'
+        });
+      }
+    }
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowUp') { e.preventDefault(); switchOrbit(-1); }
+    if (e.key === 'ArrowDown') { e.preventDefault(); switchOrbit(1); }
+    if (e.key === ' ') {
+      e.preventDefault();
+      if (running && dashCooldown <= 0) {
+        // Quick tangential dash
+        const r = ORBITS[ship.orbit];
+        const a = ship.angle;
+        const dx = -Math.sin(a) * 15;
+        const dy = Math.cos(a) * 15;
+        // Visual dash burst
+        for (let i = 0; i < 20; i++) {
+          const ang = Math.random() * Math.PI * 2;
+          const sp = 1 + Math.random() * 3;
+          particles.push({
+            x: CX + Math.cos(a) * r,
+            y: CY + Math.sin(a) * r,
+            vx: Math.cos(ang) * sp - Math.sin(a)*2,
+            vy: Math.sin(ang) * sp + Math.cos(a)*2,
+            life: 25 + Math.random() * 20,
+            maxLife: 45, color: '#00e5ff'
+          });
+        }
+        dashCooldown = 120; // ~2 sec
+        flashTimer = 8;
+      }
+    }
+    if (e.key === 'r' || e.key === 'R') reset();
+  });
+
+  function spawnAsteroid() {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 230 + Math.random() * 30; // outside screen
+    const speed = 0.7 + Math.random() * 1.2 + level * 0.1;
+    const size = 6 + Math.random() * 10;
+    const dir = { x: -Math.cos(angle), y: -Math.sin(angle) };
+    asteroids.push({
+      x: CX + Math.cos(angle) * dist,
+      y: CY + Math.sin(angle) * dist,
+      vx: dir.x * speed,
+      vy: dir.y * speed,
+      size,
+      ang: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.05,
+      // color variations
+      hue: Math.floor(Math.random() * 40 + 340) % 360 // purple/red range
+    });
+  }
+
+  function checkCollision(a, sx, sy) {
+    const dx = a.x - sx, dy = a.y - sy;
+    return Math.sqrt(dx*dx + dy*dy) < a.size + SHIP_R;
+  }
+
+  function burst(pos, color, count, spd) {
+    for (let i = 0; i < (count || 20); i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 1 + Math.random() * (spd || 3);
+      particles.push({
+        x: pos.x, y: pos.y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s,
+        life: 30 + Math.random() * 40,
+        maxLife: 70,
+        color: color || '#ff5252'
+      });
+    }
+  }
+
+  function gameOver() {
+    running = false;
+    if (score > record) {
+      record = score;
+      localStorage.setItem('orbitRecord', record);
+      recordEl.textContent = record;
+    }
+    finalScore.textContent = score;
+    overlay.style.display = 'block';
+    // Big death burst
+    const r = ORBITS[ship.orbit];
+    const a = ship.angle;
+    burst({x: CX + Math.cos(a) * r, y: CY + Math.sin(a) * r}, '#ff1744', 40, 5);
+  }
+
+  function reset() { init(); }
+
+  function loop() {
+    if (!running) {
+      // Keep drawing particles
+      updateParticles();
+      draw();
+      anim = requestAnimationFrame(loop);
+      return;
+    }
+
+    // Ship orbit
+    ship.angle += ship.speed + level * 0.002;
+    if (dashCooldown > 0) dashCooldown--;
+    if (flashTimer > 0) flashTimer--;
+
+    // Spawn asteroids
+    spawnTimer++;
+    const interval = Math.max(20, spawnInterval - level * 4);
+    if (spawnTimer >= interval) {
+      spawnTimer = 0;
+      spawnAsteroid();
+      // Extra at higher levels
+      if (level > 3) spawnAsteroid();
+    }
+
+    // Move asteroids
+    for (let i = asteroids.length - 1; i >= 0; i--) {
+      const a = asteroids[i];
+      a.x += a.vx;
+      a.y += a.vy;
+      a.ang += a.rotSpeed;
+
+      // Remove if too far
+      const dx = a.x - CX, dy = a.y - CY;
+      if (dx*dx + dy*dy > 70000) {
+        asteroids.splice(i, 1);
+        continue;
+      }
+
+      // Collision
+      const r = ORBITS[ship.orbit];
+      const sx = CX + Math.cos(ship.angle) * r;
+      const sy = CY + Math.sin(ship.angle) * r;
+      if (checkCollision(a, sx, sy)) {
+        gameOver();
+      }
+    }
+
+    // Score: time survived
+    score++;
+    scoreEl.textContent = score;
+    const newLevel = Math.floor(score / 300) + 1;
+    if (newLevel > level) {
+      level = newLevel;
+      levelEl.textContent = level;
+      // Level-up flash
+      flashTimer = 20;
+      // Screen burst celebration
+      for (let i = 0; i < 30; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = 100 + Math.random() * 120;
+        particles.push({
+          x: CX + Math.cos(a) * d,
+          y: CY + Math.sin(a) * d,
+          vx: Math.cos(a + (Math.random()-0.5)*1) * 0.5,
+          vy: Math.sin(a + (Math.random()-0.5)*1) * 0.5,
+          life: 50 + Math.random() * 40,
+          maxLife: 90,
+          color: '#ffd740'
+        });
+      }
+    }
+
+    updateParticles();
+    draw();
+    anim = requestAnimationFrame(loop);
+  }
+
+  function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.96;
+      p.vy *= 0.96;
+      p.life--;
+      if (p.life <= 0) particles.splice(i, 1);
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // Stars background
+    ctx.fillStyle = '#fff';
+    for (let i = 0; i < 80; i++) {
+      // Deterministic "random" stars from seed
+      const sx = ((i * 7919 + 137) % W);
+      const sy = ((i * 6271 + 281) % H);
+      const s = ((i * 3 + 1) % 3) + 1;
+      ctx.globalAlpha = 0.2 + ((i * 7) % 5) * 0.08;
+      ctx.beginPath(); ctx.arc(sx, sy, s*0.5, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Orbits circles
+    ORBITS.forEach((r, i) => {
+      ctx.strokeStyle = i === ship.orbit ? '#7c4dff44' : '#2a1a5e44';
+      ctx.lineWidth = i === ship.orbit ? 1.5 : 1;
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath(); ctx.arc(CX, CY, r, 0, Math.PI*2); ctx.stroke();
+      ctx.setLineDash([]);
+    });
+
+    // Sun
+    const grad = ctx.createRadialGradient(CX, CY, 0, CX, CY, 40);
+    grad.addColorStop(0, '#fff8e1');
+    grad.addColorStop(0.2, '#ffd740');
+    grad.addColorStop(0.5, '#ff6d00');
+    grad.addColorStop(1, 'rgba(255,109,0,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(CX, CY, 40, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff3e0';
+    ctx.shadowBlur = 30;
+    ctx.shadowColor = '#ff6d00';
+    ctx.beginPath(); ctx.arc(CX, CY, 8, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Asteroids
+    asteroids.forEach(a => {
+      ctx.save();
+      ctx.translate(a.x, a.y);
+      ctx.rotate(a.ang);
+      ctx.strokeStyle = `hsl(${a.hue}, 50%, 60%)`;
+      ctx.fillStyle = `hsla(${a.hue}, 40%, 25%, 0.6)`;
+      ctx.lineWidth = 1.5;
+      // Rocky polygon
+      ctx.beginPath();
+      const sides = 7 + Math.floor(a.size) % 3;
+      for (let i = 0; i < sides; i++) {
+        const ang = (i / sides) * Math.PI * 2;
+        const r2 = a.size * (0.7 + Math.sin(i * 3.7) * 0.3);
+        ctx[i === 0 ? 'moveTo' : 'lineTo'](Math.cos(ang) * r2, Math.sin(ang) * r2);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      // Glow
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = `hsla(${a.hue}, 50%, 60%, 0.3)`;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    });
+
+    // Ship
+    const r = ORBITS[ship.orbit];
+    const a = ship.angle;
+    const sx = CX + Math.cos(a) * r;
+    const sy = CY + Math.sin(a) * r;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(a + Math.PI/2);
+
+    // Ship glow
+    ctx.shadowBlur = dashCooldown > 0 ? 25 : 15;
+    ctx.shadowColor = dashCooldown > 0 ? '#00e5ff' : '#7c4dff';
+
+    // Ship body (triangle)
+    ctx.fillStyle = dashCooldown > 0 ? '#00e5ff' : '#b388ff';
+    ctx.beginPath();
+    ctx.moveTo(0, -SHIP_R - 4);
+    ctx.lineTo(-SHIP_R - 2, SHIP_R + 2);
+    ctx.lineTo(SHIP_R + 2, SHIP_R + 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Engine trail
+    if (flashTimer <= 0) {
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(124,77,255,0.3)';
+      ctx.beginPath();
+      ctx.moveTo(-3, SHIP_R + 2);
+      ctx.lineTo(0, SHIP_R + 12 + Math.sin(Date.now()/80) * 4);
+      ctx.lineTo(3, SHIP_R + 2);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // Particles
+    particles.forEach(p => {
+      const alpha = p.life / p.maxLife;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.shadowBlur = 6;
+      ctx.shadowColor = p.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 2 * alpha + 0.5, 0, Math.PI*2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+
+    // Dash cooldown indicator
+    if (dashCooldown > 0) {
+      ctx.strokeStyle = '#00e5ff33';
+      ctx.lineWidth = 2;
+      const pct = dashCooldown / 120;
+      ctx.beginPath();
+      ctx.arc(CX, CY, 210, -Math.PI/2, -Math.PI/2 + (1-pct) * Math.PI*2);
+      ctx.stroke();
+    }
+
+    // Level flash
+    if (flashTimer > 10) {
+      ctx.fillStyle = `rgba(255,215,64,${(flashTimer-10)/30})`;
+      ctx.beginPath(); ctx.arc(CX, CY, 200, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  // Touch support
+  let touchStartY = 0;
+  canvas.addEventListener('touchstart', e => {
+    touchStartY = e.touches[0].clientY;
+  });
+  canvas.addEventListener('touchend', e => {
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    if (Math.abs(dy) > 20) {
+      switchOrbit(dy < 0 ? -1 : 1);
+    } else {
+      // tap = dash
+      if (running && dashCooldown <= 0) {
+        const r = ORBITS[ship.orbit];
+        const a = ship.angle;
+        for (let i = 0; i < 20; i++) {
+          const ang = Math.random() * Math.PI * 2;
+          const sp = 1 + Math.random() * 3;
+          particles.push({
+            x: CX + Math.cos(a) * r,
+            y: CY + Math.sin(a) * r,
+            vx: Math.cos(ang) * sp - Math.sin(a)*2,
+            vy: Math.sin(ang) * sp + Math.cos(a)*2,
+            life: 25 + Math.random() * 20,
+            maxLife: 45, color: '#00e5ff'
+          });
+        }
+        dashCooldown = 120;
+        flashTimer = 8;
+      }
+    }
+  });
+
+  init();
+</script>
+</body>
+</html>
